@@ -1,0 +1,20 @@
+[package]
+name = "ccp_bbr"
+version = "0.3.0"
+authors = ["Akshay Narayan <akshayn@mit.edu>"]
+edition = "2021"
+
+[[bin]]
+name = "bbr"
+path = "src/bin/bbr.rs"
+
+[dependencies]
+lotus = {path ="../lotus"}
+async-trait = "0.1"
+clap = "2.29"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+tokio = { version = "1", features = ["rt", "net", "macros", "time", "rt-multi-thread", "signal"] }
+slog = "2.7.0"
+slog-async = "2.8.0"
+slog-term = "2.9.1"

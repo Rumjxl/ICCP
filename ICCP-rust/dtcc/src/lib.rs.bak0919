@@ -1,0 +1,461 @@
+#[macro_use]
+extern crate slog;
+use slog::Logger;
+
+use portus::ipc::Ipc;
+use portus::lang::Scope;
+use portus::{CongAlg, Datapath, DatapathInfo, Flow, DatapathTrait, Report};
+use std::collections::HashMap;
+use std::time::{Duration, Instant};
+
+use futures::{AsyncReadExt,AsyncWriteExt};
+use tokio::runtime::Runtime;
+use tokio::net::TcpStream;
+use tokio::time::{timeout};
+use tokio_util::compat;
+
+use capnp_rpc::{rpc_twoparty_capnp, twoparty, RpcSystem};
+
+// #![allow(dead_code)]
+mod ccp_capnp{
+    include!(concat!(env!("OUT_DIR"), "/ccp_capnp.rs"));
+}
+
+// // define report interval
+// mod agg_measurement;
+// use agg_measurement::{AggMeasurement, ReportStatus};
+/// Configuration option: how often reports should be collected?
+#[derive(Debug, Clone, Copy)]
+pub enum ConfigReport {
+    Ack,
+    Rtt,
+    Interval(Duration),
+}
+
+pub struct Dtcc{
+    pub logger: Option<Logger>,
+    pub server_addr: String,
+    pub init_cwnd: u32,
+    pub report_option: ConfigReport,
+}
+
+impl<T: Ipc> CongAlg<T> for Dtcc {
+    type Flow = DtccFlow<T>;
+
+    fn name() -> &'static str {
+        "DTCC"
+    }
+
+    fn datapath_programs(&self) -> HashMap<&'static str, String> {
+        let mut h = HashMap::default();
+        h.insert(
+            "DtccDatapathInterval", "
+                (def
+                    (Report
+                        (volatile bytes_acked 0)
+                        (volatile bytes_misordered 0)
+                        (volatile ecn_bytes 0)
+                        (volatile packets_acked 0)
+                        (volatile packets_misordered 0)
+                        (volatile ecn_packets 0)
+                        (volatile loss 0)
+                        (volatile timeout false)
+                        (volatile bytes_in_flight 0)
+                        (volatile packets_in_flight 0)
+                        (volatile bytes_pending 0)
+                        (volatile rtt 0)
+                        (volatile rin 0)
+                        (volatile rout 0)
+                    )
+                    (ReportTime 0)
+                )
+                (when true
+                    (:= Report.bytes_acked (+ Report.bytes_acked Ack.bytes_acked))
+                    (:= Report.bytes_misordered (+ Report.bytes_misordered Ack.bytes_misordered))
+                    (:= Report.ecn_bytes (+ Report.ecn_bytes Ack.ecn_bytes))
+                    (:= Report.packets_acked (+ Report.packets_acked Ack.packets_acked))
+                    (:= Report.packets_misordered (+ Report.packets_misordered Ack.packets_misordered))
+                    (:= Report.ecn_packets (+ Report.ecn_packets Ack.ecn_packets))
+
+                    (:= Report.loss Ack.lost_pkts_sample)
+                    (:= Report.timeout Flow.was_timeout)
+
+                    (:= Report.bytes_in_flight Flow.bytes_in_flight)
+                    (:= Report.packets_in_flight Flow.packets_in_flight)
+                    (:= Report.bytes_pending Flow.bytes_pending)
+
+                    (:= Report.rtt Flow.rtt_sample_us)
+                    (:= Report.rin Flow.rate_outgoing)
+                    (:= Report.rout Flow.rate_incoming)
+
+                    (fallthrough)
+                )
+                (when (|| Report.timeout (> Report.loss 0))
+                    (report)
+                    (:= Micros 0)
+                )
+                (when (> Micros ReportTime)
+                    (report)
+                    (:= Micros 0)
+                )
+            ".to_string(),
+        );
+
+        h.insert(
+            "DtccDatapathIntervalRTT", "
+                (def
+                    (Report
+                        (volatile bytes_acked 0)
+                        (volatile bytes_misordered 0)
+                        (volatile ecn_bytes 0)
+                        (volatile packets_acked 0)
+                        (volatile packets_misordered 0)
+                        (volatile ecn_packets 0)
+                        (volatile loss 0)
+                        (volatile timeout false)
+                        (volatile bytes_in_flight 0)
+                        (volatile packets_in_flight 0)
+                        (volatile bytes_pending 0)
+                        (volatile rtt 0)
+                        (volatile rin 0)
+                        (volatile rout 0)
+                    )
+                )
+                (when true
+                    (:= Report.bytes_acked (+ Report.bytes_acked Ack.bytes_acked))
+                    (:= Report.bytes_misordered (+ Report.bytes_misordered Ack.bytes_misordered))
+                    (:= Report.ecn_bytes (+ Report.ecn_bytes Ack.ecn_bytes))
+                    (:= Report.packets_acked (+ Report.packets_acked Ack.packets_acked))
+                    (:= Report.packets_misordered (+ Report.packets_misordered Ack.packets_misordered))
+                    (:= Report.ecn_packets (+ Report.ecn_packets Ack.ecn_packets))
+
+                    (:= Report.loss Ack.lost_pkts_sample)
+                    (:= Report.timeout Flow.was_timeout)
+
+                    (:= Report.bytes_in_flight Flow.bytes_in_flight)
+                    (:= Report.packets_in_flight Flow.packets_in_flight)
+                    (:= Report.bytes_pending Flow.bytes_pending)
+
+                    (:= Report.rtt Flow.rtt_sample_us)
+                    (:= Report.rin Flow.rate_outgoing)
+                    (:= Report.rout Flow.rate_incoming)
+
+                    (fallthrough)
+                )
+                (when (|| Report.timeout (> Report.loss 0))
+                    (report)
+                    (:= Micros 0)
+                )
+                (when (> Micros Flow.rtt_sample_us)
+                    (report)
+                    (:= Micros 0)
+                )
+            ".to_string(),
+        );
+
+        h.insert(
+            "DtccDatapathIntervalAck", "
+                (def
+                    (Report
+                        (volatile bytes_acked 0)
+                        (volatile bytes_misordered 0)
+                        (volatile ecn_bytes 0)
+                        (volatile packets_acked 0)
+                        (volatile packets_misordered 0)
+                        (volatile ecn_packets 0)
+                        (volatile loss 0)
+                        (volatile timeout false)
+                        (volatile bytes_in_flight 0)
+                        (volatile packets_in_flight 0)
+                        (volatile bytes_pending 0)
+                        (volatile rtt 0)
+                        (volatile rin 0)
+                        (volatile rout 0)
+                    )
+                )
+                (when true
+                    (:= Report.bytes_acked (+ Report.bytes_acked Ack.bytes_acked))
+                    (:= Report.bytes_misordered (+ Report.bytes_misordered Ack.bytes_misordered))
+                    (:= Report.ecn_bytes (+ Report.ecn_bytes Ack.ecn_bytes))
+                    (:= Report.packets_acked (+ Report.packets_acked Ack.packets_acked))
+                    (:= Report.packets_misordered (+ Report.packets_misordered Ack.packets_misordered))
+                    (:= Report.ecn_packets (+ Report.ecn_packets Ack.ecn_packets))
+
+                    (:= Report.loss Ack.lost_pkts_sample)
+                    (:= Report.timeout Flow.was_timeout)
+
+                    (:= Report.bytes_in_flight Flow.bytes_in_flight)
+                    (:= Report.packets_in_flight Flow.packets_in_flight)
+                    (:= Report.bytes_pending Flow.bytes_pending)
+
+                    (:= Report.rtt Flow.rtt_sample_us)
+                    (:= Report.rin Flow.rate_outgoing)
+                    (:= Report.rout Flow.rate_incoming)
+
+                    (report)
+                )
+            ".to_string(),
+        );
+
+        h
+    }
+    fn new_flow(&self, mut control: Datapath<T>, info: DatapathInfo) -> Self::Flow {
+        //check configured init_cwnd
+        //In dtcc:self.init_cwnd
+        let init_cwnd = if self.init_cwnd != 0 {
+            self.init_cwnd
+        } else {
+            info.init_cwnd
+        };
+
+        DtccFlow::init(
+            Default::default(),
+            control,
+            info,
+            &self.server_addr,
+            self.report_option,
+            init_cwnd,
+            self.logger.clone(),
+        ).unwrap()
+    }
+}
+
+pub struct DtccFlow<T: Ipc> {
+    sc: Scope,
+    control_channel: Datapath<T>,
+    info: DatapathInfo,
+    rl_channel:ccp_capnp::r_l_agent::Client,
+    report_option: ConfigReport,
+    runtime: tokio::runtime::Runtime,
+    logger: Option<Logger>,
+    cwnd: u32,
+    init_cwnd: u32,
+}
+
+impl<T: Ipc> DtccFlow<T>{
+    fn init(
+        sc: Scope,
+        control: Datapath<T>,
+        info: DatapathInfo,
+        rl_server_addr: &str,
+        repopt: ConfigReport,
+        init_cwnd: u32,
+        logger: Option<Logger>,
+    ) -> std::io::Result<Self> {
+        let mut runtime = tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build().expect("Failed to create Tokio runtime");
+
+        use std::net::ToSocketAddrs;
+        let stream = runtime
+            .block_on(async {
+                match TcpStream::connect(&rl_server_addr.to_socket_addrs().unwrap().next().unwrap()).await {
+                    Ok(stream) => stream,
+                    Err(e) => {
+                        logger.as_ref().map(|log| {
+                            error!(log, "In starting dtcc flow";
+                             "sock_id" => info.sock_id,
+                             "error" => format!("{:?}", e))
+                        });
+                        std::process::exit(1);
+                    }
+                }
+            });
+        // let mut std_stream = stream.into_std()?;
+        // std_stream.set_nonblocking(true)?;
+        let local_addr = stream.local_addr()?;
+        let peer_addr = stream.peer_addr()?;
+        // stream.set_nodelay(true)?;
+
+        let (reader, writer) = tokio_util::compat::TokioAsyncReadCompatExt::compat(stream).split();
+        let network = Box::new(twoparty::VatNetwork::new(
+            futures::io::BufReader::new(reader),
+            futures::io::BufWriter::new(writer),
+            rpc_twoparty_capnp::Side::Client,
+            Default::default(),
+        ));
+        let mut rpc_system = RpcSystem::new(network, None);
+
+        use futures::TryFutureExt;
+        let client: ccp_capnp::r_l_agent::Client = rpc_system.bootstrap(rpc_twoparty_capnp::Side::Server);
+
+        let local = tokio::task::LocalSet::new();
+        local.run_until(async move {
+            // let mut rpc_system = rpc_system.clone();
+            tokio::task::spawn_local( async move {
+                rpc_system.map_err(|e| eprintln!("RPC system error: {:?}", e));
+            }).await.unwrap();
+        });
+
+        let mut s = DtccFlow{
+            sc,
+            control_channel:control,
+            info,
+            rl_channel: client,
+            report_option: repopt,
+            runtime,
+            logger: logger,
+            cwnd:init_cwnd,
+            init_cwnd:init_cwnd,
+        };
+
+        s.logger.as_ref().map(|log| {
+            info!(log, "In starting dtcc flow";
+             "sock_id" => s.info.sock_id,
+             "local" => format!("{:?}", local_addr),
+             "peer" => format!("{:?}", peer_addr))
+        });
+        match s.report_option {
+            ConfigReport::Ack => {
+                s.sc = s.install_ack_update();
+            }
+            ConfigReport::Rtt => {
+                s.sc = s.install_datapath_interval_rtt();
+            }
+            ConfigReport::Interval(i) => {
+                s.sc = s.install_datapath_interval(i);
+            }
+        }
+
+        Ok(s)
+    }
+}
+
+impl<T: Ipc> Flow for DtccFlow<T> {
+    fn on_report(&mut self, sock_id: u32, m: Report) { 
+        
+        // ask the RL agent what it wants to do
+        let mut req = self.rl_channel.get_action_request();
+        self.logger.as_ref().map(|log| {
+            info!(log, "got ack: rpc request init";
+            "sock_id" => sock_id,
+            "client_socketid" => self.rl_channel.client.hook.get_brand(),
+            );
+        });
+        // in RLAgent.get_action method: req.get.init_structname 初始化结构
+        let mut obs = req.get().init_observation();
+        // in RLAgent.get_action method: obs.set_paramname 输入结构参数的值
+        obs.set_bytes_acked(m.get_field("Report.bytes_acked", &self.sc).unwrap());
+        obs.set_bytes_misordered(m.get_field("Report.bytes_misordered", &self.sc).unwrap());
+        obs.set_ecn_bytes(m.get_field("Report.ecn_bytes", &self.sc).unwrap());
+        obs.set_packets_acked(m.get_field("Report.packets_acked", &self.sc).unwrap());
+        obs.set_packets_misordered(m.get_field("Report.packets_misordered", &self.sc).unwrap());
+        obs.set_ecn_packets(m.get_field("Report.ecn_packets", &self.sc).unwrap());
+        obs.set_loss(m.get_field("Report.loss", &self.sc).unwrap());
+        obs.set_timeout(m.get_field("Report.timeout", &self.sc).unwrap() != 0);
+        obs.set_bytes_in_flight(m.get_field("Report.bytes_in_flight", &self.sc).unwrap());
+        obs.set_packets_in_flight(m.get_field("Report.packets_in_flight", &self.sc).unwrap());
+        obs.set_bytes_pending(m.get_field("Report.bytes_pending", &self.sc).unwrap());
+        obs.set_rtt(m.get_field("Report.rtt", &self.sc).unwrap());
+        obs.set_rin(m.get_field("Report.rin", &self.sc).unwrap());
+        obs.set_rout(m.get_field("Report.rout", &self.sc).unwrap());
+
+        self.logger.as_ref().map(|log| {
+            info!(log, "got ack: obs init and send";
+            "sock_id" => sock_id,
+            "obs_rtt" => obs.get_rtt(),
+            );
+        });
+
+        // TODO:block_on
+        // let response = self.runtime.block_on(req.send().promise);
+        // match response {
+        //     Ok(resp) => {
+        //         let action = resp.get().unwrap().get_action().unwrap();
+        //         // in DTCC: cwnd = current_cwnd * (cwnd_action)
+        //         let cwnd = match action.get_cwnd() {
+        //             c if (c > 0.0) => Some(c * f64::from(self.cwnd * self.info.mss)),
+        //             0.0 => None,
+        //             _ => unreachable!(),
+        //         };
+        //         let updates: Vec<(&str, u32)> = cwnd
+        //             .into_iter()
+        //             .map(|c| ("Cwnd", c as u32))
+        //             .collect();
+
+        //         self.control_channel.update_field(&self.sc, &updates);
+        //     }
+        //     Err(e) => {
+        //         // Handle the error, log it, or take appropriate action
+        //         self.logger.as_ref().map(|log| {
+        //             error!(log, "Failed to get action from RL agent"; "error" => format!("{:?}", e),"sock_id" => sock_id);
+        //         });
+        //         // You might want to take some fallback action or simply ignore the error
+        //     }
+        // }
+
+        // TODO: timeout!
+        let timeout_duration = Duration::from_millis(50); // 设置超时时间为50毫秒
+
+        self.runtime.block_on(
+            async{
+                let response = timeout(timeout_duration, req.send().promise).await;
+
+                match response {
+                    Ok(Ok(resp)) => {
+                        let action = resp.get().unwrap().get_action().unwrap();
+                        let cwnd = match action.get_cwnd() {
+                            c if (c > 0.0) => Some(c * f64::from(self.cwnd * self.info.mss)),
+                            0.0 => None,
+                            _ => unreachable!(),
+                        };
+                        let updates: Vec<(&str, u32)> = cwnd
+                            .into_iter()
+                            .map(|c| ("Cwnd", c as u32))
+                            .collect();
+        
+                        self.control_channel.update_field(&self.sc, &updates);
+                    },
+                    Ok(Err(e)) => {
+                        // Handle the error, log it, or take appropriate action
+                        self.logger.as_ref().map(|log| {
+                            error!(log, "Failed to get action from RL agent"; "error" => format!("{:?}", e),"sock_id" => sock_id);
+                        });
+                        // You might want to take some fallback action or simply ignore the error
+                    },
+                    Err(_) => {
+                        // 超时处理，例如返回默认值
+                        self.logger.as_ref().map(|log| {
+                            error!(log, "Request timed out; using default action"; "sock_id" => sock_id);
+                        });
+                        let default_cwnd = self.cwnd; // 假设的默认值为上一次的窗口值
+                        let updates: Vec<(&str, u32)> = vec![("Cwnd", default_cwnd as u32)];
+                        self.control_channel.update_field(&self.sc, &updates);
+                    },
+                }
+            }
+        )
+    }
+}
+
+//Dtcc private function implementation
+impl<T: Ipc> DtccFlow<T> {
+    /// Make no updates in the datapath, and send a report after an interval
+    fn install_datapath_interval(&mut self, interval: Duration) -> Scope {
+        self.logger.as_ref().map(|log| {
+            info!(log, "set program: dtcc datapath interval";
+            "report_interval_us" => interval.as_micros() as u32
+            );
+        });
+        self.control_channel
+            .set_program(
+                "DtccDatapathInterval",
+                Some(&[("ReportTime", interval.as_micros() as u32)][..]),
+            )
+            .unwrap()
+    }
+
+    /// Make no updates in the datapath, and send a report after each RTT
+    fn install_datapath_interval_rtt(&mut self) -> Scope {
+        self.control_channel
+            .set_program("DtccDatapathIntervalRTT", None)
+            .unwrap()
+    }
+
+    /// Make no updates in the datapath, but send a report on every ack.
+    fn install_ack_update(&mut self) -> Scope {
+        self.control_channel
+            .set_program("DtccDatapathIntervalAck", None)
+            .unwrap()
+    }
+}

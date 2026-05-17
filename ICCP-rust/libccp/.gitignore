@@ -1,0 +1,12 @@
+**/*.d
+**/*.o
+**/*.a
+**/*.so
+unittest*
+!unittest.c
+CMakeFiles/
+CMakeCache.txt
+.cmake
+*.cmake
+_build
+install_manifest.txt

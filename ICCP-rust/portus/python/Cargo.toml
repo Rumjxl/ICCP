@@ -1,0 +1,23 @@
+[package]
+name = "pyportus"
+version = "0.6.0"
+authors = ["Frank Cangialosi <frankc@csail.mit.edu>"]
+description = "A Congestion Control Plane"
+homepage = "https://ccp-project.github.io"
+license = "ISC"
+repository = "https://github.com/ccp-project/portus"
+edition = "2021"
+
+[dependencies]
+portus = { path = ".." }
+simple-signal = "1"
+pyo3 = { version = "0.17", features = ["extension-module", "macros"], default-features = false }
+tracing = "0.1"
+tracing-subscriber = "0.2"
+
+[features]
+bench = []
+
+[lib]
+name = "pyportus"
+crate-type = ["cdylib", "lib"]

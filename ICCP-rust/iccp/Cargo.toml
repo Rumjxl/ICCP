@@ -1,0 +1,28 @@
+[package]
+name = "iccp"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+# CLI
+clap = "2.29"
+
+# Async
+async-trait = "0.1"
+tokio = { version = "1", features = ["rt", "net", "macros", "time", "rt-multi-thread", "signal"] }
+
+# Logging
+tracing = "0.1.41"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+
+# Lotus framework (multi-algorithm runtime + flow routing)
+lotus = { path = "../lotus" }
+
+# DTCC algorithm (已迁移到 lotus AsyncCongAlg)
+dtcc = { path = "../dtcc" }
+
+# BBR algorithm (已迁移到 lotus AsyncCongAlg)
+ccp_bbr = { path = "../bbr" }
+
+# Orca/Cubic algorithm (包含相关的并发控制逻辑)
+# orca = { path = "../orca" }
