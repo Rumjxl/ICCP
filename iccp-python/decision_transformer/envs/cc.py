@@ -509,7 +509,7 @@ def start_client(addr, agent_client, mtp, n_flows=1, rpc_ms=5,
                  rpc_timeout_ms=0, resp_timeout_ms=0):
     server_addr = "127.0.0.1:"+addr.split(':')[1]
     print("Trying to connect RPC server in %s" %(server_addr))
-    path_to_dtcc_client = os.path.join(os.getcwd(),"../dtcc-rust/",agent_client)
+    path_to_dtcc_client = os.path.join(os.getcwd(),"../iccp-rust/",agent_client)
     path_to_rust_log = os.path.join(os.getcwd(),"rust_log")
     os.makedirs(path_to_rust_log, exist_ok=True)
     if agent_client == "dtcc/target/debug/dtcc":
@@ -566,8 +566,6 @@ def start_client(addr, agent_client, mtp, n_flows=1, rpc_ms=5,
                + " --dtcc-addr=" + server_addr
                + " --dtcc-init-cwnd=10")
         print(cmd)
-    elif agent_client == "aurora/target/debug/aurora":
-        cmd = "sudo " + path_to_dtcc_client +" --ipc=netlink --addr="+server_addr+" --init_cwnd=4 --report_interval_rtt=0.5"
 
     print("CC client is in %s" %(path_to_dtcc_client))
     process = sh.Popen(

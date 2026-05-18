@@ -177,7 +177,7 @@ def start_server(addr, agent, ready_event=None):
 def start_client(addr):
     server_addr = "127.0.0.1:"+addr.split(':')[1]
     print("Trying to connect RPC server in %s" %(server_addr))
-    path_to_dtcc_client = os.path.join(os.getcwd(),"../dtcc-rust/dtcc/target/debug/dtcc")
+    path_to_dtcc_client = os.path.join(os.getcwd(),"../iccp-rust/dtcc/target/debug/dtcc")
     print("DTCC client is in %s" %(path_to_dtcc_client))
     process = sh.Popen("sudo " + path_to_dtcc_client +" --ipc=netlink --addr="+server_addr+" --init_cwnd=10 --report_interval_ms=10",
                         shell=True, stdout=sh.PIPE, stderr=sh.STDOUT, text=True)
