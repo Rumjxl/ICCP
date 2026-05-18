@@ -1,6 +1,6 @@
 # ICCP
 
-ICCP is an end-to-end learning-based congestion-control prototype. It combines
+ICCP is a flexible framework to integrate both heruistic and learning-based congestion-control algorithms. It combines
 a Rust CCP datapath/client runtime with a Python model-inference agent. The Rust
 side collects TCP observations and applies congestion-control updates; the
 Python side loads a policy model, serves a Cap'n Proto RPC endpoint, and returns
